@@ -83,39 +83,52 @@ pub struct Account {
 #[macro_use]
 extern crate rocket;
 
-#[get("/")]
-fn index() -> &'static str {
-    "Hello, world!"
-}
-
-// #[get("/say_hi"/<name>")]
-// fn say_hi(name: &str) -> Json<&'static str> {
-//     Json("Hi, {}",name)
-// }
-
 #[derive(Serialize)]
 struct AccountState {
+    exists: bool,
     account: String,
     balance: u128,
     nonce: u32,
 }
 
-#[post("/mint/<account_id>/<amount>")]
-fn mint(account_id: usize, amount: u128) -> Json<String> {
-    let key_pairs = generate_key_pairs(2);
-    let key = key_pairs[account_id].public().0;
+#[post("/transfer/<from>/<to>/<amount>")]
+fn transfer(from: u8, to: u8, amount: u128) -> Json<String> {
+    let key_pair_1 = generate_key_pair(from);
+    let key_pair_2 = generate_key_pair(to);
+    let account_nonce = get_account_state(from).0.nonce;
 
-    let call_0 = Call::Mint(key_pairs[0].public().0, 100);
-    let ext_0 = create_signed_extrinsic(call_0, &key_pairs[0], 0);
+    let call_0 = Call::Transfer(key_pair_1.public().0, key_pair_2.public().0, amount);
+    println!("call_0: {:?}", call_0);
+    let ext_0 = create_signed_extrinsic(call_0, &key_pair_1, account_nonce);
+    submit_extrinsic(ext_0);
+
+    Json("Transfered".to_string())
+}
+
+#[post("/mint/<account_id>/<amount>")]
+fn mint(account_id: u8, amount: u128) -> Json<String> {
+    let key_pair = generate_key_pair(account_id);
+    let account_nonce = get_account_state(account_id).0.nonce;
+
+    let call_0 = Call::Mint(key_pair.public().0, amount);
+    println!("call_0: {:?}", call_0);
+    let ext_0 = create_signed_extrinsic(call_0, &key_pair, account_nonce);
     submit_extrinsic(ext_0);
 
     Json("Minted".to_string())
 }
 
 #[get("/account_state/<account_id>")]
-fn get_account_state(account_id: usize) -> Json<AccountState> {
-    let key_pairs = generate_key_pairs(2);
-    let key = key_pairs[account_id].public().0;
+fn get_account_state(account_id: u8) -> Json<AccountState> {
+    let key;
+    if account_id < 3 {
+        key = generate_key_pair(account_id).public().0;
+    } else {
+        let public_key_bytes =
+            &hex_literal::hex!("d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d");
+        key = *public_key_bytes;
+    }
+
     let method = "state_getStorage";
     let data = hex::encode(key);
     let res = send(method, &data);
@@ -123,12 +136,14 @@ fn get_account_state(account_id: usize) -> Json<AccountState> {
     let acc = parse_result(&res);
     match acc {
         Some(acc) => Json(AccountState {
+            exists: true,
             account: data,
             balance: acc.balance,
             nonce: acc.nonce,
         }),
 
         None => Json(AccountState {
+            exists: false,
             account: data,
             balance: 0,
             nonce: 0,
@@ -138,60 +153,14 @@ fn get_account_state(account_id: usize) -> Json<AccountState> {
 
 #[launch]
 fn rocket() -> _ {
-    let authority_key_pair = generate_authority_key_pair();
-    let key_pairs_amount = 4;
-
     rocket::build()
-        .mount("/", routes![index])
-        .mount("/api", routes![get_account_state, mint])
+        .mount("/api", routes![get_account_state, mint, transfer])
         .attach(CORS)
 }
-// fn main() {
-//     let authority_key_pair = generate_authority_key_pair();
-//     let key_pairs_amount = 4;
-//     let key_pairs = generate_key_pairs(key_pairs_amount);
-//     //let mut nonces = vec![0; key_pairs_amount];
 
-//     // let call_0 = Call::Mint(key_pairs[0].public().0, 100);
-//     // let ext_0 = create_signed_extrinsic(call_0, &key_pairs[0], 0);
-//     // submit_extrinsic(ext_0);
-
-//     // let call_1 = Call::Transfer(key_pairs[0].public().0, key_pairs[1].public().0, 50);
-//     // let ext_1 = create_signed_extrinsic(call_1, &key_pairs[0], 1);
-//     // submit_extrinsic(ext_1);
-
-//     // let call_2 = Call::PrintState;
-//     // let ext_2 = create_signed_extrinsic(call_2, &key_pairs[0],0);
-//     // submit_extrinsic(ext_2);
-
-// read_account_state(key_pairs[0].public().0);
-// read_account_state(key_pairs[1].public().0);
-//     read_account_state(authority_key_pair.public().0);
-// }
-
-fn generate_authority_key_pair() -> sr25519::Pair {
-    let seed = [1; 32];
-    let pair = sr25519::Pair::from_seed(&seed);
-    println!("Authority Keypair Public Key: {:?}", pair.public());
-    pair
-}
-
-fn generate_key_pairs(amount: usize) -> Vec<sr25519::Pair> {
-    let mut key_pairs = vec![];
-    let mut seed = [0; 32];
-    for i in 0..amount {
-        let pair = sr25519::Pair::from_seed(&seed);
-        key_pairs.push(pair);
-        seed[i] = seed[i] + 1;
-    }
-    print_keypairs(&key_pairs);
-    key_pairs
-}
-
-fn print_keypairs(key_pairs: &Vec<sr25519::Pair>) {
-    for key_pair in key_pairs {
-        println!("Keypair Public Key: {:?}", key_pair.public());
-    }
+fn generate_key_pair(value: u8) -> sr25519::Pair {
+    let seed = [value; 32];
+    sr25519::Pair::from_seed(&seed)
 }
 
 fn create_signed_extrinsic(call: Call, key_pair: &sr25519::Pair, nonce: u32) -> BasicExtrinsic {
@@ -214,30 +183,11 @@ fn submit_extrinsic(ext: BasicExtrinsic) {
     send(method, &data);
 }
 
-fn read_account_state(key: [u8; 32]) {
-    let method = "state_getStorage";
-    let data = hex::encode(key);
-    let res = send(method, &data);
-
-    let acc = parse_result(&res);
-    match acc {
-        Some(acc) => {
-            println!(
-                "Account {} => Balance: {} | Nonce: {}",
-                data, acc.balance, acc.nonce
-            )
-        }
-        None => println!("Account {} => Null", data),
-    }
-}
-
 fn parse_result(res: &String) -> Option<Account> {
-    println!("res: {}", res);
     // Remove the quotes and the 0x from the response
     let result = res.replace("\"", "").replace("%", "").replace("0x", "");
 
     // Decode the hex string into an Account struct
-    println!("res: {}", res);
     let account_bytes = hex::decode(result);
     match account_bytes {
         Ok(acc) => {
